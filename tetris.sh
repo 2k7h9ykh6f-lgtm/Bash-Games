@@ -10,6 +10,8 @@ EXITFLAG="/tmp/tetris_exit.flag"
 WRITEFILE="/tmp/tetris_pipe.in"
 READFILE="/tmp/tetris_pipe.out"
 
+SCORE_FILE="$HOME/.bash-games-tetris-scores"
+
 INPUT_PIPES=()
 readkey() {
     local txt;
@@ -100,10 +102,16 @@ good_game=(
     '                                                 '
     '                   Score:                        '
     '                                                 '
+    '                    Best:                        '
+    '                    Rank:                        '
+    '                   Lines:                        '
+    '                                                 '
     '          press   Q   to quit                    '
     '          press   N   to start a new game        '
     '          press   S   to change the level        '
     '          press   R   to replay your game        '
+    '          press   H   to view history            '
+    '                                                 '
     '                                                 '
 );
 
@@ -124,6 +132,7 @@ start_game=(
 
 blockarr=(); #记录name 和 flag
 keyarray=(); #记录按键
+lines_cleared=0; #消行总数
 #------------------------------------------------------------------------#
 
 #========================================================================#
@@ -374,6 +383,7 @@ have_score() {
         3) ((score+=400)); ;;
         4) ((score+=800)); ;;
     esac
+    ((lines_cleared+=n));
 }
 
 #根据flag 和 name找到其的坐标数组
@@ -621,40 +631,148 @@ replay() {
         ((score+=10));
     done
 
-    score=0; level=1;
+    score=0; level=1; lines_cleared=0;
     return 0;
+}
+
+#=============================高分榜函数=================================
+save_game_record() {
+    local sc=$1 sl=$2 el=$3 lc=$4
+    [[ "$sc" =~ ^[0-9]+$ ]] || return 0
+    ((sc==0)) && return 0
+    local ts;
+    ts="$(date '+%Y-%m-%d %H:%M' 2>/dev/null)" || ts="?"
+    local tmpf="${SCORE_FILE}.tmp.$$"
+    {
+        echo "${sc}|${sl}|${el}|${lc}|${ts}"
+        [ -f "$SCORE_FILE" ] && cat "$SCORE_FILE" 2>/dev/null
+    } | sort -t'|' -k1 -rn | head -100 > "$tmpf" 2>/dev/null
+    mv "$tmpf" "$SCORE_FILE" 2>/dev/null
+    return 0
+}
+
+get_best_score() {
+    [ -f "$SCORE_FILE" ] || { echo 0; return 0; }
+    local best;
+    best="$(head -1 "$SCORE_FILE" 2>/dev/null | cut -d'|' -f1)"
+    [[ "$best" =~ ^[0-9]+$ ]] || best=0
+    echo "$best"
+    return 0
+}
+
+get_score_rank() {
+    local sc=$1
+    [ -f "$SCORE_FILE" ] || { echo "-"; return 0; }
+    local total=0 greater=0 line s;
+    while IFS='|' read -r s _rest; do
+        [[ "$s" =~ ^[0-9]+$ ]] || continue
+        ((total+=1))
+        ((s>sc)) && ((greater+=1))
+    done < "$SCORE_FILE" 2>/dev/null
+    echo "$((greater+1))/${total}"
+    return 0
+}
+
+format_time_ago() {
+    local ts="$1"
+    [ -z "$ts" ] && { echo "?"; return 0; }
+    local now epoch_ts diff;
+    now="$(date '+%s' 2>/dev/null)" || { echo "$ts"; return 0; }
+    epoch_ts="$(date -d "$ts" '+%s' 2>/dev/null)" || { echo "$ts"; return 0; }
+    ((diff=now-epoch_ts))
+    ((diff<0)) && diff=0
+    if ((diff<60)); then
+        echo "${diff}s ago"
+    elif ((diff<3600)); then
+        echo "$((diff/60))m ago"
+    elif ((diff<86400)); then
+        echo "$((diff/3600))h ago"
+    else
+        echo "$((diff/86400))d ago"
+    fi
+    return 0
+}
+
+paint_history() {
+    local xcent=$((`tput lines`/2)) ycent=$((`tput cols`/2))
+    local pw=62 ph=14
+    local px=$((xcent-ph/2)) py=$((ycent-pw/2))
+    local blank="$(printf '%*s' $pw '')"
+    local i sc sl el lc ts rank_line ago
+
+    for (( i = 0; i < ph; i++ )); do
+        echo -ne "\033[$((px+i));${py}H\033[44m${blank}\033[0m"
+    done
+
+    echo -ne "\033[$((px+1));$((py+2))H\033[44m\033[37m  R E C E N T   G A M E S  \033[0m\033[44m"
+    echo -ne "\033[$((px+3));$((py+2))H\033[44m\033[36m  SCORE    START  END  LINES  TIME          \033[0m\033[44m"
+
+    local row=0;
+    if [ -f "$SCORE_FILE" ]; then
+        while IFS='|' read -r sc sl el lc ts; do
+            ((row>=5)) && break
+            [[ "$sc" =~ ^[0-9]+$ ]] || continue
+            ago="$(format_time_ago "$ts")"
+            rank_line=$(printf "  %-8s %-4s->%-3s %-5s  %s" "$sc" "$sl" "$el" "$lc" "$ago")
+            echo -ne "\033[$((px+4+row));$((py+2))H\033[44m\033[33m${rank_line}\033[0m\033[44m"
+            ((row+=1))
+        done < "$SCORE_FILE" 2>/dev/null
+    fi
+
+    echo -ne "\033[$((px+ph-2));$((py+2))H\033[44m\033[37m  press any key to return\033[0m\033[44m"
+    readkey > /dev/null 2>&1
+    return 0
 }
 
 paint_game_over() {
     local xcent=$((`tput lines`/2)) ycent=$((`tput cols`/2))
-    local x=$((xcent-4)) y=$((ycent-25))
-    for (( i = 0; i < 10; i++ )); do
+    local x=$((xcent-8)) y=$((ycent-25))
+    local best rank;
+    best="$(get_best_score)";
+    rank="$(get_score_rank $score)";
+    for (( i = 0; i < 16; i++ )); do
         echo -ne "\033[$((x+i));${y}H\033[44m${good_game[$i]}\033[0m";
     done
     echo -ne "\033[$((x+3));$((ycent+1))H\033[44m${score}\033[0m";
+    echo -ne "\033[$((x+5));$((ycent+1))H\033[44m${best}\033[0m";
+    echo -ne "\033[$((x+6));$((ycent+1))H\033[44m${rank}\033[0m";
+    echo -ne "\033[$((x+7));$((ycent+1))H\033[44m${lines_cleared}\033[0m";
 }
 
 game_over() {
+    local final_score=$score final_olevel=$olevel final_level=$level final_lines=$lines_cleared;
+    save_game_record "$final_score" "$final_olevel" "$final_level" "$final_lines";
     paint_game_over;
 
-    level=1; local pkey;
+    level=1; local pkey saved_score saved_lines;
     while ! [ -f $EXITFLAG ]; do
         pkey="$(readkey)"
         [[ $pkey = 'q' ]] || [[ $pkey = 'Q' ]] && game_exit;
         [[ $pkey = 'n' ]] || [[ $pkey = 'N' ]] && break;
         [[ $pkey = 's' ]] || [[ $pkey = 'S' ]] && ((level=level%9+1));
-        [[ $pkey = 'r' ]] || [[ $pkey = 'R' ]] && replay && paint_game_over;
+        if [[ $pkey = 'r' ]] || [[ $pkey = 'R' ]]; then
+            saved_score=$score; saved_lines=$lines_cleared;
+            replay;
+            score=$saved_score; lines_cleared=$saved_lines;
+            paint_game_over;
+        fi
+        if [[ $pkey = 'h' ]] || [[ $pkey = 'H' ]]; then
+            paint_history;
+            paint_game_over;
+        fi
         echo -ne "\033[$((lvctx));$((lvcty))H\033[31m$level\033[0m";
     done
     olevel=$level;
     blockarr=();
     keyarray=();
+    lines_cleared=0;
 }
 
 game_start() {
     score=0; #总分数
     level=1; #等级
     TIME=9;
+    lines_cleared=0;
 
     local xcent=$(tput lines) ycent=$(tput cols)
     local n=$((xcent/BXLINES)) m=$((ycent/BXCOLNS)) i j;
