@@ -9,6 +9,7 @@
 EXITFLAG="/tmp/tetris_exit.flag"
 WRITEFILE="/tmp/tetris_pipe.in"
 READFILE="/tmp/tetris_pipe.out"
+SCOREFILE="$HOME/.bash-games-tetris-scores"   # 本地高分榜文件
 
 INPUT_PIPES=()
 readkey() {
@@ -99,11 +100,15 @@ good_game=(
     '                G A M E  O V E R !               '
     '                                                 '
     '                   Score:                        '
+    '                   Best :                        '
+    '                   Rank :                        '
+    '                   Lines:                        '
     '                                                 '
     '          press   Q   to quit                    '
     '          press   N   to start a new game        '
     '          press   S   to change the level        '
     '          press   R   to replay your game        '
+    '          press   H   to view recent records     '
     '                                                 '
 );
 
@@ -124,6 +129,10 @@ start_game=(
 
 blockarr=(); #记录name 和 flag
 keyarray=(); #记录按键
+
+cleared_lines=0;                                                    #本局消行数
+disp_score=0; disp_best=0; disp_rank=0; disp_total=0; disp_lines=0; #结束页展示值
+best_score=0; game_rank=1; total_games=0;                           #高分榜统计值
 #------------------------------------------------------------------------#
 
 #========================================================================#
@@ -368,6 +377,7 @@ have_score() {
         ((j==MAPY)) && ((n+=1)) && update $i;    #可以消掉一行
     done
 
+    cleared_lines=$((cleared_lines+n));   #累计本局消行数
     case $n in
         1) ((score+=100)); ;;
         2) ((score+=200)); ;;
@@ -552,6 +562,7 @@ mk_random() { # 产生下一个随机方块
 new_game() {
     local i gmover=0 nextbk=0;
 
+    score=0; cleared_lines=0;   #每局清零, 保证"本局分数"独立
     game_init; #初始化游戏
     while ! [ -f $EXITFLAG ]; do
         paint_next; #在next框中打印下一个方块
@@ -625,16 +636,87 @@ replay() {
     return 0;
 }
 
+# 追加一条成绩记录; 任何失败都不影响游戏
+save_score() {
+    local s=$1 sl=$2 fl=$3 ln=$4 ts;
+    ts="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)";
+    echo "${s}|${sl}|${fl}|${ln}|${ts}" >> "$SCOREFILE" 2>/dev/null;
+    return 0;
+}
+
+# 读取历史成绩, 计算最高分/总局数/本局排名; 读失败则保持默认值
+read_score_stats() {
+    local cur=$1 s rest mx=0 cnt=0 greater=0;
+    best_score=0; total_games=0; game_rank=1;
+    [ -f "$SCOREFILE" ] || return 0;
+    while IFS='|' read -r s rest; do
+        [[ "$s" =~ ^[0-9]+$ ]] || continue;
+        ((cnt+=1));
+        ((s>mx)) && mx=$s;
+        ((s>cur)) && ((greater+=1));
+    done < "$SCOREFILE" 2>/dev/null;
+    best_score=$mx; total_games=$cnt; game_rank=$((greater+1));
+    return 0;
+}
+
+# 在结束框区域覆盖显示最近 5 局记录, 等待任意键返回(q 退出游戏)
+show_recent_scores() {
+    local xcent=$((`tput lines`/2)) ycent=$((`tput cols`/2))
+    local x=$((xcent-4)) y=$((ycent-25)) i row=2 s sl fl ln ts line rk blank;
+
+    printf -v blank '%49s' '';
+    for (( i = 0; i < 14; i++ )); do
+        echo -ne "\033[$((x+i));${y}H\033[44m${blank}\033[0m";
+    done
+
+    printf -v line "%-49s" "          R E C E N T   5   G A M E S";
+    echo -ne "\033[$((x));${y}H\033[44m${line}\033[0m";
+    printf -v line " %-7s %-6s %-6s %-6s %-19s" "Score" "Start" "Final" "Lines" "Time";
+    echo -ne "\033[$((x+1));${y}H\033[44m${line}\033[0m";
+
+    if [ -f "$SCOREFILE" ]; then
+        while IFS='|' read -r s sl fl ln ts; do
+            [ -z "$s" ] && continue;
+            printf -v line " %-7s %-6s %-6s %-6s %-19s" "$s" "$sl" "$fl" "$ln" "$ts";
+            echo -ne "\033[$((x+row));${y}H\033[44m${line}\033[0m";
+            ((row+=1));
+        done < <(tail -n 5 "$SCOREFILE" 2>/dev/null)
+    fi
+    if ((row==2)); then
+        printf -v line "%-49s" "   (no records yet)";
+        echo -ne "\033[$((x+2));${y}H\033[44m${line}\033[0m";
+    fi
+    printf -v line "%-49s" "         press any key to go back";
+    echo -ne "\033[$((x+13));${y}H\033[44m${line}\033[0m";
+
+    while ! [ -f $EXITFLAG ]; do
+        rk="$(readkey)";
+        [[ $rk = [qQ] ]] && game_exit;
+        ! [ -z "$rk" ] && break;
+        sleep 0.1;
+    done
+    return 0;
+}
+
 paint_game_over() {
     local xcent=$((`tput lines`/2)) ycent=$((`tput cols`/2))
-    local x=$((xcent-4)) y=$((ycent-25))
-    for (( i = 0; i < 10; i++ )); do
+    local x=$((xcent-4)) y=$((ycent-25)) i
+    for (( i = 0; i < ${#good_game[@]}; i++ )); do
         echo -ne "\033[$((x+i));${y}H\033[44m${good_game[$i]}\033[0m";
     done
-    echo -ne "\033[$((x+3));$((ycent+1))H\033[44m${score}\033[0m";
+    echo -ne "\033[$((x+3));$((ycent+1))H\033[44m${disp_score}\033[0m";
+    echo -ne "\033[$((x+4));$((ycent+1))H\033[44m${disp_best}\033[0m";
+    echo -ne "\033[$((x+5));$((ycent+1))H\033[44m${disp_rank}/${disp_total}\033[0m";
+    echo -ne "\033[$((x+6));$((ycent+1))H\033[44m${disp_lines}\033[0m";
 }
 
 game_over() {
+    cleared_lines=${cleared_lines:-0};
+    save_score "$score" "$olevel" "$level" "$cleared_lines";   #持久化本局成绩
+    read_score_stats "$score";                                 #算最高分与排名
+    disp_score=$score; disp_best=$best_score;
+    disp_rank=$game_rank; disp_total=$total_games; disp_lines=$cleared_lines;
+
     paint_game_over;
 
     level=1; local pkey;
@@ -644,6 +726,7 @@ game_over() {
         [[ $pkey = 'n' ]] || [[ $pkey = 'N' ]] && break;
         [[ $pkey = 's' ]] || [[ $pkey = 'S' ]] && ((level=level%9+1));
         [[ $pkey = 'r' ]] || [[ $pkey = 'R' ]] && replay && paint_game_over;
+        [[ $pkey = 'h' ]] || [[ $pkey = 'H' ]] && show_recent_scores && paint_game_over;
         echo -ne "\033[$((lvctx));$((lvcty))H\033[31m$level\033[0m";
     done
     olevel=$level;
