@@ -124,6 +124,12 @@ start_game=(
 
 blockarr=(); #记录name 和 flag
 keyarray=(); #记录按键
+
+# hold / next-queue state
+held_name="";   held_flag=2;    # 暂存方块(为空表示还没暂存过)
+can_hold=1;                     # 当前下落方块本轮是否还能 hold(每次只能一次)
+prebuf_name=(); prebuf_flag=(); # next 预览队列(已弹出 nname 之后剩下的两个)
+REPLAYING=0;    rep_base=0;     # 回放标记 与 当前 blockarr 基址(回放时预览/恢复用)
 #------------------------------------------------------------------------#
 
 #========================================================================#
@@ -173,7 +179,8 @@ MAP=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
     name=${NAME[$((x))]};  
     flag=$((RANDOM%FLAG[$x]+1)); 
 
-    nname='I'; nflag=2; #下一个方块
+    seed_queue;                              #预生成 next 预览队列
+    held_name=""; held_flag=2; can_hold=1;   #hold 初始为空
 
     centerx=$mainctx; #每个图形的中心打印点
     centery=$maincty;
@@ -238,6 +245,32 @@ paint_box() {
         echo -ne "\033[$((x+i));$((y+w+1))H\033[${color}mI\033[0m";
     done
 }
+
+#-----------------迷你方块: 用于 hold 框 和 next 预览队列------------------#
+# 用空格清空一个矩形区域(避免覆盖到边框) $1 起始行 $2 起始列 $3 宽 $4 高
+clear_region() {
+    local r=$1 c=$2 w=$3 h=$4 i
+    for (( i = 0; i < h; i++ )); do
+        printf "\033[%d;%dH%*s" $((r+i)) $c $w ""
+    done
+}
+
+# 画一个迷你格子(两个字符宽) $1 行 $2 列 $3 颜色下标
+paint_mini_cell() {
+    echo -ne "\033[$1;$2H\033[${colortwo[$3]}m##\033[0m";
+}
+
+# 画一个迷你方块图形 $1 name $2 flag $3 基准行 $4 基准列
+paint_mini_piece() {
+    local pn=$1 pf=$2 br=$3 bc=$4 suf i n axn ayn
+    [ -z "$pn" ] && return;
+    case $pf in 1) suf=a;; 2) suf=b;; 3) suf=c;; 4) suf=d;; *) suf=a;; esac
+    n=$(( $(mapname "$pn") - 1 ));
+    axn="${pn}${suf}x"; ayn="${pn}${suf}y";
+    for (( i = 0; i < 4; i++ )); do
+        paint_mini_cell $(( br + ${axn}[$i] )) $(( bc + 2*(${ayn}[$i]) )) $n;
+    done
+}
 #---------------------------------------------------------------------------------------
 
 #打印界面
@@ -245,13 +278,15 @@ paint_gui() {
     # ((upx<=0 || lty<=0)) && game_exit 1;
 
     paint_box $upx $lty $mainw $mainh 34; #画主框
-    paint_box $ntx $nty $nextw $nexth 33; #画next框
+    paint_box 1 $nty $nextw 4  33;        #画hold框 (1~6 行)
+    paint_box 7 $nty $nextw 12 33;        #画next框 (7~20 行, 3格预览)
     paint_box $lvx $lvy $levew $leveh 32; #画level框
     paint_box $scx $scy $scorw $scorh 36; #画分数框
     paint_box $hpx $hpy $helpw $helph 31; #画帮助框
 
 #打印score, help 等提示字符
-    echo -ne "\033[$((ntx+2));$((nty+17))H\033[34mN E X T\033[0m";
+    echo -ne "\033[1;$((nty+17))H\033[34mH O L D\033[0m";
+    echo -ne "\033[7;$((nty+17))H\033[34mN E X T\033[0m";
 
     echo -ne "\033[$((scx+2));$((scy+16))H\033[31mS C O R E\033[0m";
     echo -ne "\033[$((scx+4));$((scy+20))H\033[31m0\033[0m";
@@ -265,6 +300,7 @@ paint_gui() {
     echo -ne "\033[$((hpctx+4));$((hpcty))H\033[34mJ --- Soft Drop\033[0m";
     echo -ne "\033[$((hpctx+6));$((hpcty))H\033[34mK --- Rotate\033[0m";
     echo -ne "\033[$((hpctx+8));$((hpcty))H\033[34mSpace or Enter --- Hard Drop\033[0m";
+    echo -ne "\033[$((hpctx+10));$((hpcty))H\033[34mC --- Hold Piece\033[0m";
 
     echo -ne "\033[$((hpctx+11));$((hpcty))H\033[34mP --- Pause Game\033[0m";
     echo -ne "\033[$((hpctx+13));$((hpcty))H\033[34mQ --- Quit Game\033[0m";
@@ -273,18 +309,30 @@ paint_gui() {
 
 #---------------------------------------------------------
 
-#在next框中打印下一个方块图形
+#在 hold 框 和 next 框中打印 hold 方块与接下来 3 个方块
 paint_next() {
-    (($#==0)) && mk_random;
-    local oflag=$flag oname=$name
+    (($#==0)) && advance_next;   # 实时: 弹出队首为 nname/nflag(回放传 -n, nname/nflag 已由 blockarr 设好)
 
-    ((centerx=mainctx+2)); ((centery=maincty+9));
-    erase_x;
-    flag=$nflag;  name=$nname;
+    # hold 框
+    clear_region 2 $((nty+1)) 18 4;
+    paint_mini_piece "$held_name" "$held_flag" 3 $((nty+8));
 
-    paint_x;
-    flag=$oflag;  name=$oname;
-    centerx=$mainctx; centery=$maincty;
+    # next 框: 三个预览方块
+    clear_region 8 $((nty+1)) 18 12;
+    paint_mini_piece "$nname" "$nflag" 9 $((nty+8));
+
+    local s2n s2f s3n s3f
+    if ((REPLAYING==1)); then          # 回放: 更深的两格从 blockarr 推算(后续将出现的方块)
+        s2n=${blockarr[rep_base+6]};  s2f=${blockarr[rep_base+7]};
+        s3n=${blockarr[rep_base+10]}; s3f=${blockarr[rep_base+11]};
+    else                                # 实时: 直接读预览队列
+        s2n=${prebuf_name[0]}; s2f=${prebuf_flag[0]};
+        s3n=${prebuf_name[1]}; s3f=${prebuf_flag[1]};
+    fi
+    paint_mini_piece "$s2n" "$s2f" 13 $((nty+8));
+    paint_mini_piece "$s3n" "$s3f" 17 $((nty+8));
+
+    centerx=$mainctx; centery=$maincty;   # 保留: 供随后的 check_first 在出生点画方块
 }
 
 # 打印分数和level
@@ -515,7 +563,33 @@ game_pause() {
     done
     echo -ne "\033[$((hpctx+17));$((hpcty+5))H\033[31m           \033[0m";
 }
-        
+
+# hold: 暂存当前方块, 每个下落方块只能 hold 一次
+do_hold() {
+    ((can_hold==0)) && return;        # 本轮已经 hold 过
+    erase_x;                          # 先擦掉当前正在下落的方块
+
+    if [ -z "$held_name" ]; then      # 暂存区为空: 存入当前方块, 取下一个方块顶上
+        held_name=$name; held_flag=$flag;
+        name=$nname;     flag=$nflag;
+        if ((REPLAYING==1)); then     # 回放: 新的下一个 = 下一轮记录的当前方块
+            local rn=${blockarr[rep_base+4]} rf=${blockarr[rep_base+5]};
+            [ -n "$rn" ] && { nname=$rn; nflag=$rf; };
+        else                          # 实时: 从队列再弹一个作为新的下一个
+            advance_next;
+        fi
+    else                              # 暂存区非空: 与当前方块交换(不消耗队列)
+        local tn=$name tf=$flag;
+        name=$held_name; flag=$held_flag;
+        held_name=$tn;   held_flag=$tf;
+    fi
+
+    centerx=$mainctx; centery=$maincty;   # 回到出生点
+    can_hold=0;                            # 本轮不能再 hold
+    paint_next -n;                         # 刷新 hold 框 与 next 队列(不要再弹队列)
+    check_first; (($?==1)) && gmover=1;    # 在出生点重画并检测是否顶到顶部(游戏结束)
+}
+
 # 根据按键作出选择
 keypress() {
     local result=0;
@@ -527,6 +601,8 @@ keypress() {
         K|k) go_rotate; result=$?; # 向上, 旋转90度
             ;;
         L|l) go_right;  result=$?; # 向右一个格子
+            ;;
+        C|c) do_hold; # 暂存当前方块
             ;;
         Q|q) game_exit; # 退出游戏
             ;;
@@ -548,16 +624,39 @@ mk_random() { # 产生下一个随机方块
     nflag=$((RANDOM%FLAG[$x]+1));
 }
 
+# 向预览队列尾部补一个随机方块
+push_random() {
+    local x=$((RANDOM%7));
+    prebuf_name+=("${NAME[$x]}");
+    prebuf_flag+=("$((RANDOM%FLAG[$x]+1))");
+}
+
+# 初始化预览队列(开新局/回放开始时调用)
+seed_queue() {
+    prebuf_name=(); prebuf_flag=();
+    local i;
+    for (( i = 0; i < 3; i++ )); do push_random; done
+}
+
+# 弹出队首作为下一个方块(nname/nflag), 再把队列补足到 2 个(供更深的两格预览)
+advance_next() {
+    nname=${prebuf_name[0]}; nflag=${prebuf_flag[0]};
+    prebuf_name=("${prebuf_name[@]:1}"); prebuf_flag=("${prebuf_flag[@]:1}");
+    while (( ${#prebuf_name[@]} < 2 )); do push_random; done
+}
+
 #开始一个新游戏
 new_game() {
-    local i gmover=0 nextbk=0;
+    local i nextbk=0;
+    REPLAYING=0; gmover=0;
 
     game_init; #初始化游戏
     while ! [ -f $EXITFLAG ]; do
-        paint_next; #在next框中打印下一个方块
+        paint_next; #刷新 hold 与 next 预览(并弹出队首为当前的下一个)
         blockarr+=($name $flag $nname $nflag);
 
         check_first; (($?==1)) && return; #检查是否游戏结束
+        can_hold=1;                       #新方块出生, 本轮允许 hold 一次
 
         while ! [ -f $EXITFLAG ]; do
             for (( i = 0; i < TIME; i++ )); do
@@ -569,15 +668,18 @@ new_game() {
                     keyarray+=("NUL");
                 fi
 
+                ((gmover==1)) && break;    #hold 顶到顶部, 游戏结束
                 ((nextbk==1)) && !((nextbk=0)) && break;
 
                 sleep 0.05
             done
 
+            ((gmover==1)) && break;
             check_stop; (($?==1)) && break;
             erase_x; ((centerx+=1)); paint_x;
         done
-        
+
+        ((gmover==1)) && return;
         name=$nname; flag=$nflag;
         ((score+=10));
     done
@@ -585,42 +687,49 @@ new_game() {
 
 replay() {
     score=0; level=$olevel;
-    local gmover=0 nextbk=0 i=0 j=0;
+    local nextbk=0 i=0 j=0;
     local blocklen=$((${#blockarr[@]})) keylen=${#keyarray[@]};
+    REPLAYING=1; gmover=0;
 
     game_init;
     for ((i=0; i<blocklen; i+=4)); do
         name=${blockarr[i]}; flag=${blockarr[i+1]};
         nname=${blockarr[i+2]}; nflag=${blockarr[i+3]};
+        rep_base=$i;                       #供 paint_next/do_hold 推算预览与 hold 取块
 
         paint_next -n;
-        check_first; (($?==1)) && return 0;
+        check_first; (($?==1)) && { REPLAYING=0; return 0; };
+        can_hold=1;                        #新方块出生, 本轮允许 hold 一次
 
         while ! [ -f $EXITFLAG ]; do
             local k=0 anykey;
             while ! [ -f $EXITFLAG ]; do
                 key=${keyarray[j++]}; [[ $key = [pP] ]] && continue;
-                keypress; 
+                keypress;
                 #((j+=1));
                 anykey="$(readkey)"
-                if ! [ -z "$anykey" ]; then 
+                if ! [ -z "$anykey" ]; then
                     [[ $anykey = [pP] ]] && game_pause;
                     [[ $anykey = [qQ] ]] && game_exit;
-                    [[ $anykey = [eE] ]] && level=1 && return 0;
+                    [[ $anykey = [eE] ]] && { level=1; REPLAYING=0; return 0; };
                 fi
 
+                ((gmover==1)) && break;     #hold 顶到顶部, 游戏结束
                 ((nextbk==1)) && !((nextbk=0)) && break;
                 ((k+=1)) && ((k==TIME)) && break;
 
                 [[ -z "$key" ]] && sleep 0.05
             done
- 
+
+            ((gmover==1)) && break;
             check_stop; (($?==1)) && break;
             erase_x; ((centerx+=1)); paint_x;
         done
+        ((gmover==1)) && { REPLAYING=0; return 0; };
         ((score+=10));
     done
 
+    REPLAYING=0;
     score=0; level=1;
     return 0;
 }
