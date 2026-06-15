@@ -46,7 +46,7 @@ game_start=(
     '         space or enter   pause/play             '
     '         q                quit at any time       '
     '         s                change the speed       '
-    '                                                 '
+    '     # obstacles  $ bonus food  @ slow food      '
     '         Press <Enter> to start the game         '
     '                                                 '
 );
@@ -92,8 +92,12 @@ snake_init() {
     xpt=($xline $xline $xline $xline $xline); #开始的各个节点的x坐标
     ypt=(5 4 3 2 1);                          #开始的各个节点的y坐标
     speed=(0.05 0.1 0.15);  spk=${spk:-1};    #速度 默认速度
+    slow_timer=0;           slow_restore=0;
+    food_type=0;            food_timer=0;
+    obs_x=(); obs_y=();
 
     draw_gui $((Lines-1)) $Cols
+    generate_obstacles
 }
 
 game_pause() {                                #暂停游戏
@@ -125,6 +129,46 @@ ch_speed() {                                  #更新速度
          2) temp="Slow  ";;
      esac
      echo -ne "\033[$Lines;3H\033[33mSpeed: $temp\033[0m";
+     if (( slow_timer > 0 )); then
+         echo -ne "\033[$Lines;14H\033[31m(SLOW)\033[0m";
+     else
+         echo -ne "\033[$Lines;14H      ";
+     fi
+}
+
+# 检查位置是否被障碍、蛇身或边框占据
+is_blocked() {
+    local bx=$1 by=$2
+    (( bx <= 1 || bx >= Lines-1 || by <= 1 || by >= Cols )) && return 0
+    for (( _bi = 0; _bi < ${#xpt[@]}; _bi++ )); do
+        (( bx == xpt[_bi] && by == ypt[_bi] )) && return 0
+    done
+    for (( _bi = 0; _bi < ${#obs_x[@]}; _bi++ )); do
+        (( bx == obs_x[_bi] && by == obs_y[_bi] )) && return 0
+    done
+    return 1
+}
+
+# 生成障碍物
+generate_obstacles() {
+    obs_x=(); obs_y=()
+    local num=$(( (Lines * Cols) / 400 ))
+    (( num < 5 )) && num=5
+    (( num > 40 )) && num=40
+    local tries ox oy
+    for (( _oi = 0; _oi < num; _oi++ )); do
+        tries=0
+        while (( tries < 200 )); do
+            ox=$((RANDOM%(Lines-4)+2))
+            oy=$((RANDOM%(Cols-3)+2))
+            if ! is_blocked $ox $oy; then
+                obs_x+=($ox); obs_y+=($oy)
+                echo -ne "\033[$ox;${oy}H\033[31m#\033[0m"
+                break
+            fi
+            ((tries++))
+        done
+    done
 }
 
 Gooooo() {                                   #更新方向
@@ -149,6 +193,10 @@ add_node() {                                 #增加节点
     local x=${xpt[0]} y=${ypt[0]}
     (( ((x>=$((Lines-1)))) || ((x<=1)) || ((y>=Cols)) || ((y<=1)) )) && return 1; #撞墙
 
+    for (( _oi = 0; _oi < ${#obs_x[@]}; _oi++ )); do
+        (( x == obs_x[_oi] && y == obs_y[_oi] )) && return 1;
+    done
+
     for (( i = $((${#snake}-1)); i > 0; i-- )); do
         (( ${xpt[0]} == ${xpt[$i]} && ${ypt[0]} == ${ypt[$i]} )) && return 1; #crashed
     done
@@ -158,11 +206,28 @@ add_node() {                                 #增加节点
 }
 
 mk_random() {                               #产生随机点和随机数
-    xrand=$((RANDOM%(Lines-3)+2));
-    yrand=$((RANDOM%(Cols-2)+2));
-    foodscore=$((RANDOM%9+1));
+    local tries=0
+    while (( tries < 300 )); do
+        xrand=$((RANDOM%(Lines-3)+2));
+        yrand=$((RANDOM%(Cols-2)+2));
+        if ! is_blocked $xrand $yrand; then break; fi
+        ((tries++))
+    done
 
-    echo -ne "\033[$xrand;${yrand}H$foodscore";
+    local roll=$((RANDOM%100))
+    if (( roll < 10 )); then
+        food_type=1; foodscore=$((RANDOM%11+10));
+        echo -ne "\033[$xrand;${yrand}H\033[35m\$\033[0m";
+        food_timer=50;
+    elif (( roll < 20 )); then
+        food_type=2; foodscore=5;
+        echo -ne "\033[$xrand;${yrand}H\033[37m@\033[0m";
+        food_timer=60;
+    else
+        food_type=0; foodscore=$((RANDOM%9+1));
+        echo -ne "\033[$xrand;${yrand}H\033[36m$foodscore\033[0m";
+        food_timer=0;
+    fi
     liveflag=0;
 }
 
@@ -182,11 +247,21 @@ new_game() {                                #重新开始新游戏
             ((sumnode--));
             add_node; (($?==0)) || return 1;
         else
-            update 0; 
+            update 0;
+            local hx=${xpt[0]} hy=${ypt[0]}
+            (( hx <= 1 || hx >= Lines-1 || hy <= 1 || hy >= Cols )) && return 1;
+            for (( _oi = 0; _oi < ${#obs_x[@]}; _oi++ )); do
+                (( hx == obs_x[_oi] && hy == obs_y[_oi] )) && return 1;
+            done
             echo -ne "\033[${xpt[0]};${ypt[0]}H\033[32m${snake[@]:0:1}\033[0m";
 
             for (( i = $((${#snake}-1)); i > 0; i-- )); do
                 update $i;
+                local sx=${xpt[$i]} sy=${ypt[$i]}
+                (( sx <= 1 || sx >= Lines-1 || sy <= 1 || sy >= Cols )) && return 1;
+                for (( _oi = 0; _oi < ${#obs_x[@]}; _oi++ )); do
+                    (( sx == obs_x[_oi] && sy == obs_y[_oi] )) && return 1;
+                done
                 echo -ne "\033[${xpt[$i]};${ypt[$i]}H\033[32m${snake[@]:$i:1}\033[0m";
 
                 (( ${xpt[0]} == ${xpt[$i]} && ${ypt[0]} == ${ypt[$i]} )) && return 1; #crashed
@@ -198,8 +273,38 @@ new_game() {                                #重新开始新游戏
         (( ((x>=$((Lines-1)))) || ((x<=1)) || ((y>=Cols)) || ((y<=1)) )) && return 1; #撞墙
 
         (( x==xrand && y==yrand )) && ((liveflag=1)) && ((sumnode+=foodscore)) && ((sumscore+=foodscore));
+        if (( x==xrand && y==yrand && liveflag==1 )); then
+            if (( food_type == 1 )); then
+                ((sumscore += 10));
+            elif (( food_type == 2 )); then
+                slow_restore=(60 45 30);
+                if (( spk < 2 )); then
+                    ((spk++));
+                    ch_speed 0;
+                    slow_timer=${slow_restore[$spk]};
+                else
+                    slow_timer=30;
+                fi
+            fi
+            food_type=0; food_timer=0;
+        fi
 
-        echo -ne "\033[$xscore;$((yscore-2))H$sumscore";
+        if (( food_timer > 0 && liveflag == 0 )); then
+            ((--food_timer)) || true;
+            if (( food_timer <= 0 )); then
+                echo -ne "\033[$xrand;${yrand}H ";
+                liveflag=1; food_type=0;
+            fi
+        fi
+        if (( slow_timer > 0 )); then
+            ((--slow_timer)) || true;
+            if (( slow_timer <= 0 )); then
+                ((spk > 0)) && ((spk--));
+                ch_speed 0;
+            fi
+        fi
+
+        echo -ne "\033[$xscore;$((yscore-2))H$sumscore  ";
     done
 }
 
