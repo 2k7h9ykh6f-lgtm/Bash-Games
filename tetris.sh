@@ -138,24 +138,29 @@ game_init() { # game_init
     lty=$((SCCOLNS/2-50));  rty=$((lty+61));            # 界面的左右 y
     ((lty<=0)) && lty=1;
 
-#next的属性
-    nextw=40;           nexth=16;                 # next框的高和宽
-    ntx=$((upx));       nty=$((rty+2));           # next框的位置
-    ntctx=$((ntx+5));   ntcty=$((nty+12));        # next框的中心打印位置
+#hold的属性
+    holdw=40;           holdh=8;
+    hldx=$((upx));      hldy=$((rty+2));
+    hldctx=$((hldx+3)); hldcty=$((hldy+12));
+
+#next的属性 (在hold下方)
+    nextw=40;           nexth=16;                      # next框的高和宽
+    ntx=$((hldx+holdh+2)); nty=$((hldy));              # next框的位置
+    ntctx=$((ntx+5));   ntcty=$((nty+12));             # next框的中心打印位置
 
 #score的属性
     scorw=$nextw;       scorh=5;
-    scx=$((ntx+20));    scy=$((nty));
+    scx=$((ntx+nexth+2)); scy=$((nty));
     scctx=$((scx+4));   sccty=$((scy+19));
 
 #level的属性
     levew=$nextw;       leveh=5;
-    lvx=$((scx+9));     lvy=$((scy));
+    lvx=$((scx+scorh+2)); lvy=$((scy));
     lvctx=$((lvx+4));   lvcty=$((lvy+20));
 
 #help的属性
-    helpw=$nextw;       helph=21;
-    hpx=$((lvx+10));    hpy=$((nty));
+    helpw=$nextw;       helph=$((mainh - (lvx+leveh+2) + upx - 2));
+    hpx=$((lvx+leveh+2)); hpy=$((nty));
     hpctx=$((hpx+4));   hpcty=$((hpy+10));
 
 #map
@@ -170,10 +175,19 @@ MAP=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
     clear; paint_gui;
 
     local x=$((RANDOM%7));
-    name=${NAME[$((x))]};  
-    flag=$((RANDOM%FLAG[$x]+1)); 
+    name=${NAME[$((x))]};
+    flag=$((RANDOM%FLAG[$x]+1));
 
-    nname='I'; nflag=2; #下一个方块
+    # 初始化三格 next 预览队列
+    next_queue=()
+    local qi qx
+    for qi in 0 1 2; do
+        qx=$((RANDOM%7))
+        next_queue+=("${NAME[$qx]}" "$((RANDOM%${FLAG[$qx]}+1))")
+    done
+
+    # Hold 暂存方块初始化
+    hname=""; hflag=0; hold_used=0
 
     centerx=$mainctx; #每个图形的中心打印点
     centery=$maincty;
@@ -245,12 +259,15 @@ paint_gui() {
     # ((upx<=0 || lty<=0)) && game_exit 1;
 
     paint_box $upx $lty $mainw $mainh 34; #画主框
+    paint_box $hldx $hldy $holdw $holdh 35; #画hold框
     paint_box $ntx $nty $nextw $nexth 33; #画next框
     paint_box $lvx $lvy $levew $leveh 32; #画level框
     paint_box $scx $scy $scorw $scorh 36; #画分数框
     paint_box $hpx $hpy $helpw $helph 31; #画帮助框
 
 #打印score, help 等提示字符
+    echo -ne "\033[$((hldx+2));$((hldy+17))H\033[35mH O L D\033[0m";
+
     echo -ne "\033[$((ntx+2));$((nty+17))H\033[34mN E X T\033[0m";
 
     echo -ne "\033[$((scx+2));$((scy+16))H\033[31mS C O R E\033[0m";
@@ -261,30 +278,58 @@ paint_gui() {
 
     echo -ne "\033[$((hpx+2));$((hpy+17))H\033[33mH E L P\033[0m";
     echo -ne "\033[$((hpctx));$((hpcty))H\033[34mH --- Move Left\033[0m";
-    echo -ne "\033[$((hpctx+2));$((hpcty))H\033[34mL --- Move Right\033[0m";
-    echo -ne "\033[$((hpctx+4));$((hpcty))H\033[34mJ --- Soft Drop\033[0m";
-    echo -ne "\033[$((hpctx+6));$((hpcty))H\033[34mK --- Rotate\033[0m";
-    echo -ne "\033[$((hpctx+8));$((hpcty))H\033[34mSpace or Enter --- Hard Drop\033[0m";
-
-    echo -ne "\033[$((hpctx+11));$((hpcty))H\033[34mP --- Pause Game\033[0m";
-    echo -ne "\033[$((hpctx+13));$((hpcty))H\033[34mQ --- Quit Game\033[0m";
-    echo -ne "\033[$((hpctx+15));$((hpcty))H\033[34mE --- Exit Replay\033[0m";
+    echo -ne "\033[$((hpctx+1));$((hpcty))H\033[34mL --- Move Right\033[0m";
+    echo -ne "\033[$((hpctx+2));$((hpcty))H\033[34mJ --- Soft Drop\033[0m";
+    echo -ne "\033[$((hpctx+3));$((hpcty))H\033[34mK --- Rotate\033[0m";
+    echo -ne "\033[$((hpctx+4));$((hpcty))H\033[34mU --- Hold Piece\033[0m";
+    echo -ne "\033[$((hpctx+5));$((hpcty))H\033[34mSpace/Enter --- Hard Drop\033[0m";
+    echo -ne "\033[$((hpctx+7));$((hpcty))H\033[34mP --- Pause Game\033[0m";
+    echo -ne "\033[$((hpctx+8));$((hpcty))H\033[34mQ --- Quit Game\033[0m";
+    echo -ne "\033[$((hpctx+9));$((hpcty))H\033[34mE --- Exit Replay\033[0m";
 }
 
 #---------------------------------------------------------
 
-#在next框中打印下一个方块图形
+#在next框中打印接下来3个方块图形
 paint_next() {
     (($#==0)) && mk_random;
-    local oflag=$flag oname=$name
+    local oflag=$flag oname=$name ocx=$centerx ocy=$centery
 
-    ((centerx=mainctx+2)); ((centery=maincty+9));
-    erase_x;
-    flag=$nflag;  name=$nname;
+    erase_next_area
+    local qi
+    for qi in 0 1 2; do
+        paint_piece_at $((mainctx+6)) $((maincty+2+qi*5)) \
+            "${next_queue[$((qi*2))]}" "${next_queue[$((qi*2+1))]}"
+    done
 
-    paint_x;
-    flag=$oflag;  name=$oname;
-    centerx=$mainctx; centery=$maincty;
+    flag=$oflag; name=$oname; centerx=$ocx; centery=$ocy
+}
+
+#擦除next预览区域（擦除固定矩形区域确保清除所有残影）
+erase_next_area() {
+    local ex ey
+    for ex in 4 5 6 7 8 9; do
+        for ey in 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19; do
+            erase_block $ex $ey
+        done
+    done
+}
+
+#在hold框中打印暂存方块
+paint_hold() {
+    if [[ -n "$hname" ]]; then
+        paint_piece_at $((mainctx+4)) $((maincty+2)) "$hname" "$hflag"
+    fi
+}
+
+#擦除hold框中的方块（擦除固定区域）
+erase_hold() {
+    local ex ey
+    for ex in 2 3 4 5 6; do
+        for ey in 3 4 5 6 7 8 9; do
+            erase_block $ex $ey
+        done
+    done
 }
 
 # 打印分数和level
@@ -322,6 +367,24 @@ erase_x() {
     for (( i = 0; i < 4; i++ )); do
         erase_block $((x+${ax}[$i])) $((y+${ay}[$i]));
     done
+}
+
+#在指定游戏格坐标打印一个方块(用于 hold/next 预览)
+paint_piece_at() {
+    local px=$1 py=$2 pname=$3 pflag=$4
+    local oname=$name oflag=$flag ocx=$centerx ocy=$centery
+    name=$pname; flag=$pflag; centerx=$px; centery=$py
+    paint_x
+    name=$oname; flag=$oflag; centerx=$ocx; centery=$ocy
+}
+
+#在指定游戏格坐标擦除一个方块
+erase_piece_at() {
+    local px=$1 py=$2 pname=$3 pflag=$4
+    local oname=$name oflag=$flag ocx=$centerx ocy=$centery
+    name=$pname; flag=$pflag; centerx=$px; centery=$py
+    erase_x
+    name=$oname; flag=$oflag; centerx=$ocx; centery=$ocy
 }
 
 rotate_x() {
@@ -504,8 +567,42 @@ go_fast() { #快速固定
     done
 }
 
+do_hold() { #暂存当前方块
+    # 每个下落方块只能 hold 一次
+    ((hold_used==1)) && return 1
+
+    erase_x
+    erase_hold  # 先擦除旧的 hold 显示
+
+    if [[ -z "$hname" ]]; then
+        # hold 为空：当前方块存入 hold，从队列取下一个
+        hname=$name; hflag=$flag
+
+        name="${next_queue[0]}"; flag="${next_queue[1]}"
+        next_queue=("${next_queue[@]:2}")
+        local qx=$((RANDOM%7))
+        next_queue+=("${NAME[$qx]}" "$((RANDOM%${FLAG[$qx]}+1))")
+    else
+        # hold 有方块：交换当前方块与 hold
+        local tmp_name=$name tmp_flag=$flag
+        name=$hname; flag=$hflag
+        hname=$tmp_name; hflag=$tmp_flag
+    fi
+
+    hold_used=1
+    centerx=$mainctx; centery=$maincty; flag=1
+
+    paint_hold   # 画新的 hold 方块
+    paint_next -n
+
+    check_first
+    (($?==1)) && return 2  # 游戏结束
+
+    return 0
+}
+
 game_pause() {
-    echo -ne "\033[$((hpctx+17));$((hpcty+5))H\033[31mGame Paused\033[0m";
+    echo -ne "\033[$((hpx+helph-2));$((hpy+10))H\033[31mGame Paused\033[0m";
     local pkey;
     while ! [ -f $EXITFLAG ]; do
         pkey="$(readkey)"
@@ -513,7 +610,7 @@ game_pause() {
         [[ $pkey = 'p' ]] || [[ $pkey == 'P' ]] && break;
         sleep 0.1
     done
-    echo -ne "\033[$((hpctx+17));$((hpcty+5))H\033[31m           \033[0m";
+    echo -ne "\033[$((hpx+helph-2));$((hpy+10))H\033[31m           \033[0m";
 }
         
 # 根据按键作出选择
@@ -528,11 +625,16 @@ keypress() {
             ;;
         L|l) go_right;  result=$?; # 向右一个格子
             ;;
+        U|u) do_hold;   result=$?; # 暂存方块
+            ((result==0 || result==2)) && nextbk=1;
+            ((result==2)) && return 2; # 游戏结束
+            return 0;
+            ;;
         Q|q) game_exit; # 退出游戏
             ;;
         P|p) game_pause;
             ;;
-        space)  
+        space)
             go_fast;    nextbk=1;
             ;;
     esac
@@ -541,11 +643,13 @@ keypress() {
 #----------------------------------------------------------------#
 
 #================================================================#
-mk_random() { # 产生下一个随机方块
+mk_random() { # 移动队列并产生新的末尾方块
+    # 将队列前移一个位置（丢弃已使用的第一个）
+    next_queue=("${next_queue[@]:2}")
     local x=$((RANDOM%7))
-
-    nname=${NAME[$x]};
-    nflag=$((RANDOM%FLAG[$x]+1));
+    next_queue+=("${NAME[$x]}" "$((RANDOM%${FLAG[$x]}+1))")
+    # 保持向后兼容
+    nname="${next_queue[0]}"; nflag="${next_queue[1]}"
 }
 
 #开始一个新游戏
@@ -554,8 +658,15 @@ new_game() {
 
     game_init; #初始化游戏
     while ! [ -f $EXITFLAG ]; do
-        paint_next; #在next框中打印下一个方块
-        blockarr+=($name $flag $nname $nflag);
+        hold_used=0
+        paint_next;        #在next框中打印3个预览方块
+        paint_hold;        #在hold框中打印暂存方块
+        # 记录完整状态: name flag + 3个队列 + hold状态 = 12个值
+        blockarr+=($name $flag \
+            "${next_queue[0]}" "${next_queue[1]}" \
+            "${next_queue[2]}" "${next_queue[3]}" \
+            "${next_queue[4]}" "${next_queue[5]}" \
+            "${hname:-_}" "$hflag" "$hold_used" "_");
 
         check_first; (($?==1)) && return; #检查是否游戏结束
 
@@ -564,7 +675,9 @@ new_game() {
                 key="$(readkey)"
                 if ! [ -z "$key" ]; then
                     keypress;
+                    local kp_result=$?
                     keyarray+=(${key:-space});
+                    ((kp_result==2)) && return; # hold 后游戏结束
                 else
                     keyarray+=("NUL");
                 fi
@@ -577,8 +690,10 @@ new_game() {
             check_stop; (($?==1)) && break;
             erase_x; ((centerx+=1)); paint_x;
         done
-        
-        name=$nname; flag=$nflag;
+
+        # 推进队列（无论是否 hold，都需要推进）
+        name="${next_queue[0]}"; flag="${next_queue[1]}"
+        mk_random
         ((score+=10));
     done
 }
@@ -587,23 +702,42 @@ replay() {
     score=0; level=$olevel;
     local gmover=0 nextbk=0 i=0 j=0;
     local blocklen=$((${#blockarr[@]})) keylen=${#keyarray[@]};
+    local hold_acted=0;
 
+    hname=""; hflag=0; hold_used=0;
     game_init;
-    for ((i=0; i<blocklen; i+=4)); do
+    for ((i=0; i<blocklen; i+=12)); do
+        hold_acted=0
+        hold_used=0
         name=${blockarr[i]}; flag=${blockarr[i+1]};
-        nname=${blockarr[i+2]}; nflag=${blockarr[i+3]};
+        next_queue=("${blockarr[i+2]}" "${blockarr[i+3]}" \
+                    "${blockarr[i+4]}" "${blockarr[i+5]}" \
+                    "${blockarr[i+6]}" "${blockarr[i+7]}");
+        local _rhname="${blockarr[i+8]}"
+        local _rhflag="${blockarr[i+9]}"
+        [[ "$_rhname" == "_" ]] && _rhname=""
+        # 从下一条记录读取 spawn 时的 hold 状态
+        if ((i+12+8 < blocklen)); then
+            _rhname="${blockarr[i+12+8]}"
+            _rhflag="${blockarr[i+12+9]}"
+            [[ "$_rhname" == "_" ]] && _rhname=""
+        fi
+        hname="$_rhname"; hflag=$_rhflag
 
         paint_next -n;
+        paint_hold;
         check_first; (($?==1)) && return 0;
 
         while ! [ -f $EXITFLAG ]; do
             local k=0 anykey;
             while ! [ -f $EXITFLAG ]; do
                 key=${keyarray[j++]}; [[ $key = [pP] ]] && continue;
-                keypress; 
-                #((j+=1));
+                keypress;
+                local kp_result=$?;
+                ((kp_result==2)) && return 0; # hold 后游戏结束
+                ((nextbk==1)) && hold_acted=1
                 anykey="$(readkey)"
-                if ! [ -z "$anykey" ]; then 
+                if ! [ -z "$anykey" ]; then
                     [[ $anykey = [pP] ]] && game_pause;
                     [[ $anykey = [qQ] ]] && game_exit;
                     [[ $anykey = [eE] ]] && level=1 && return 0;
@@ -614,10 +748,16 @@ replay() {
 
                 [[ -z "$key" ]] && sleep 0.05
             done
- 
+
             check_stop; (($?==1)) && break;
             erase_x; ((centerx+=1)); paint_x;
         done
+
+        if ((hold_acted==1)); then
+            # hold 发生：跳过被 hold 方块的记录
+            ((i+=12));
+        fi
+
         ((score+=10));
     done
 
@@ -649,6 +789,7 @@ game_over() {
     olevel=$level;
     blockarr=();
     keyarray=();
+    hname=""; hflag=0; hold_used=0;
 }
 
 game_start() {
